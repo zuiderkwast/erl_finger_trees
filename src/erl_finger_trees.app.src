@@ -1,0 +1,11 @@
+{application, erl_finger_trees, [
+	{description, "2-3 Finger Trees"},
+	{vsn, "0.1.0"},
+	{id, "git"},
+	{modules, []},
+	{registered, []},
+	{applications, [
+		kernel,
+		stdlib
+	]}
+]}.
