@@ -1,6 +1,6 @@
--module(sequence_eqc).
+-module(sequence_proper).
 
--include_lib("eqc/include/eqc.hrl").
+-include_lib("proper/include/proper.hrl").
 
 -compile(export_all).
 

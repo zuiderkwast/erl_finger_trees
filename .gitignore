@@ -1,0 +1,7 @@
+deps
+*.beam
+doc/*.html
+doc/erlang.png
+doc/stylesheet.css
+erl_crash.dump
+ebin

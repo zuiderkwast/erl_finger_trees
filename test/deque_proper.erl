@@ -1,6 +1,6 @@
--module(deque_eqc).
+-module(deque_proper).
 
--include_lib("eqc/include/eqc.hrl").
+-include_lib("proper/include/proper.hrl").
 
 -compile(export_all).
 

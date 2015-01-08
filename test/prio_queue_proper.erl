@@ -1,6 +1,6 @@
--module(prio_queue_eqc).
+-module(prio_queue_proper).
 
--include_lib("eqc/include/eqc.hrl").
+-include_lib("proper/include/proper.hrl").
 
 -compile(export_all).
 
