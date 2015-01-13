@@ -1,42 +1,21 @@
 PROJECT = erl_finger_trees
-include erlang.mk
 
-# The included erlang.mk has the tests targets removed and instead implemented
-# below. 'make tests' runs the PropEr tests.
+DEPS = parse_trans
+dep_parse_trans = git https://github.com/uwiger/parse_trans.git 2.9.1
 
 TEST_DEPS = proper
 dep_proper = git https://github.com/manopapad/proper.git master
 
-# Test deps
+include erlang.mk
 
-ALL_TEST_DEPS_DIRS = $(addprefix $(DEPS_DIR)/,$(TEST_DEPS))
-$(foreach dep,$(TEST_DEPS),$(eval $(call dep_target,$(dep))))
+# Tests using PropEr
 
-build-test-deps: $(ALL_TEST_DEPS_DIRS)
-	@for dep in $(ALL_TEST_DEPS_DIRS) ; do $(MAKE) -C $$dep; done
+# PropEr is downloaded only when 'make test' is called.
 
-# Tests, general
 
-TEST_DIR = test
+tests:: proper
 
-TEST_ERLC_OPTS ?= +debug_info +warn_export_vars +warn_shadow_vars \
-	+warn_obsolete_guard -DTEST=1 -DEXTRA=1
-
-tests: ERLC_OPTS = $(TEST_ERLC_OPTS)
-tests:: clean deps app build-tests
-
-clean:: clean-tests
-
-build-tests: build-test-deps
-	$(gen_verbose) erlc -v $(TEST_ERLC_OPTS) -I include/ -o $(TEST_DIR) \
-		$(wildcard $(TEST_DIR)/*.erl $(TEST_DIR)/*/*.erl) -pa ebin/
-
-clean-tests:
-	$(gen_verbose) rm -rf test/*.beam
-
-# PropEr
-
-PROPER_OPTS ?= 
+PROPER_OPTS ?=
 PROPER_MODS ?= $(basename $(notdir $(wildcard $(TEST_DIR)/*_proper.erl)))
 
 PROPER_RUN = erl \
@@ -46,12 +25,12 @@ PROPER_RUN = erl \
 	-eval 'case lists:all(fun (M) -> \
 	                          case proper:module(M, [$(PROPER_OPTS)]) of \
 	                              {error, Reason} -> \
-	                                  io:format("~p", [Reason]), \
+	                                  io:format("FAIL: ~p", [Reason]), \
 	                                  false; \
 	                              [] -> \
 	                                  true; \
 	                              Ok -> \
-	                                  io:format("~p", [Ok]), \
+	                                  io:format("OK: ~p", [Ok]), \
 	                                  true \
 	                          end \
 	                      end, \
@@ -62,5 +41,3 @@ PROPER_RUN = erl \
 
 proper:
 	$(gen_verbose) $(PROPER_RUN)
-
-tests:: proper

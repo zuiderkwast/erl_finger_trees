@@ -28,19 +28,30 @@ V ?= 0
 gen_verbose_0 = @echo " GEN   " $@;
 gen_verbose = $(gen_verbose_$(V))
 
+# "erl" command.
+
+ERL = erl +A0 -noinput -boot start_clean
+
 # Core targets.
 
 ifneq ($(words $(MAKECMDGOALS)),1)
 .NOTPARALLEL:
 endif
 
-all::
-	@$(MAKE) --no-print-directory deps
+all:: deps
 	@$(MAKE) --no-print-directory app
 	@$(MAKE) --no-print-directory rel
 
-clean::
+# Noop to avoid a Make warning when there's nothing to do.
+rel::
+	@echo -n
+
+clean:: clean-crashdump
+
+clean-crashdump:
+ifneq ($(wildcard erl_crash.dump),)
 	$(gen_verbose) rm -f erl_crash.dump
+endif
 
 distclean:: clean
 
@@ -76,7 +87,7 @@ define core_http_get
 endef
 else
 define core_http_get
-	erl -noshell -eval 'ssl:start(), inets:start(), case httpc:request(get, {"$(2)", []}, [{autoredirect, true}], []) of {ok, {{_, 200, _}, _, Body}} -> case file:write_file("$(1)", Body) of ok -> ok; {error, R1} -> halt(R1) end; {error, R2} -> halt(R2) end, halt(0).'
+	$(ERL) -eval 'ssl:start(), inets:start(), case httpc:request(get, {"$(2)", []}, [{autoredirect, true}], []) of {ok, {{_, 200, _}, _, Body}} -> case file:write_file("$(1)", Body) of ok -> ok; {error, R1} -> halt(R1) end; {error, R2} -> halt(R2) end, halt(0).'
 endef
 endif
 
@@ -98,6 +109,9 @@ erlang-mk:
 .PHONY: distclean-deps distclean-pkg pkg-list pkg-search
 
 # Configuration.
+
+AUTOPATCH ?= edown gen_leader gproc
+export AUTOPATCH
 
 DEPS_DIR ?= $(CURDIR)/deps
 export DEPS_DIR
@@ -136,6 +150,41 @@ distclean:: distclean-deps distclean-pkg
 
 # Deps related targets.
 
+define dep_autopatch
+	$(ERL) -eval " \
+DepDir = \"$(DEPS_DIR)/$(1)/\", \
+fun() -> \
+	{ok, Conf} = file:consult(DepDir ++ \"rebar.config\"), \
+	File = case lists:keyfind(deps, 1, Conf) of false -> []; {_, Deps} -> \
+		[begin {Method, Repo, Commit} = case Repos of \
+			{git, R} -> {git, R, master}; \
+			{M, R, {branch, C}} -> {M, R, C}; \
+			{M, R, {tag, C}} -> {M, R, C}; \
+			{M, R, C} -> {M, R, C} \
+		end, \
+		io_lib:format(\"DEPS += ~s\ndep_~s = ~s ~s ~s~n\", [Name, Name, Method, Repo, Commit]) \
+		end || {Name, _, Repos} <- Deps] \
+	end, \
+	ok = file:write_file(\"$(DEPS_DIR)/$(1)/Makefile\", [\"ERLC_OPTS = +debug_info\n\n\", File, \"\ninclude erlang.mk\"]) \
+end(), \
+AppSrcOut = \"$(DEPS_DIR)/$(1)/src/$(1).app.src\", \
+AppSrcIn = case filelib:is_regular(AppSrcOut) of false -> \"$(DEPS_DIR)/$(1)/ebin/$(1).app\"; true -> AppSrcOut end, \
+fun() -> \
+	{ok, [{application, $(1), L}]} = file:consult(AppSrcIn), \
+	L2 = case lists:keyfind(modules, 1, L) of {_, _} -> L; false -> [{modules, []}|L] end, \
+	L3 = case lists:keyfind(vsn, 1, L2) of {vsn, git} -> lists:keyreplace(vsn, 1, L2, {vsn, \"git\"}); _ -> L2 end, \
+	ok = file:write_file(AppSrcOut, io_lib:format(\"~p.~n\", [{application, $(1), L3}])) \
+end(), \
+case AppSrcOut of AppSrcIn -> ok; _ -> ok = file:delete(AppSrcIn) end, \
+halt()."
+endef
+
+ifeq ($(V),0)
+define dep_autopatch_verbose
+	@echo " PATCH " $(1);
+endef
+endif
+
 define dep_fetch
 	if [ "$$$$VS" = "git" ]; then \
 		git clone -n -- $$$$REPO $(DEPS_DIR)/$(1); \
@@ -166,6 +215,15 @@ else
 	REPO=$(word 2,$(dep_$(1))); \
 	COMMIT=$(word 3,$(dep_$(1))); \
 	$(call dep_fetch,$(1))
+endif
+ifneq ($(filter $(1),$(AUTOPATCH)),)
+	$(call dep_autopatch_verbose,$(1)) if [ -f $(DEPS_DIR)/$(1)/rebar.config ]; then \
+		$(call dep_autopatch,$(1)); \
+		cd $(DEPS_DIR)/$(1)/ && ln -s ../../erlang.mk; \
+	elif [ ! -f $(DEPS_DIR)/$(1)/Makefile ]; then \
+		echo "ERLC_OPTS = +debug_info\ninclude erlang.mk" > $(DEPS_DIR)/$(1)/Makefile; \
+		cd $(DEPS_DIR)/$(1)/ && ln -s ../../erlang.mk; \
+	fi
 endif
 endef
 
@@ -242,9 +300,15 @@ xyrl_verbose = $(xyrl_verbose_$(V))
 mib_verbose_0 = @echo " MIB   " $(filter %.bin %.mib,$(?F));
 mib_verbose = $(mib_verbose_$(V))
 
-# Core targets.
+# Targets.
 
-app:: erlc-include ebin/$(PROJECT).app
+ifeq ($(wildcard ebin/test),)
+app:: app-build
+else
+app:: clean app-build
+endif
+
+app-build: erlc-include ebin/$(PROJECT).app
 	$(eval MODULES := $(shell find ebin -type f -name \*.beam \
 		| sed "s/ebin\//'/;s/\.beam/',/" | sed '$$s/.$$//'))
 	@if [ -z "$$(grep -E '^[^%]*{modules,' src/$(PROJECT).app.src)" ]; then \
@@ -256,6 +320,11 @@ app:: erlc-include ebin/$(PROJECT).app
 		| sed "s/{modules,[[:space:]]*\[\]}/{modules, \[$(MODULES)\]}/" \
 		| sed "s/{id,[[:space:]]*\"git\"}/{id, \"$(GITDESCRIBE)\"}/" \
 		> ebin/$(PROJECT).app
+
+erlc-include:
+	-@if [ -d ebin/ ]; then \
+		find include/ src/ -type f -name \*.hrl -newer ebin -exec touch $(shell find src/ -type f -name "*.erl") \; 2>/dev/null || printf ''; \
+	fi
 
 define compile_erl
 	$(erlc_verbose) erlc -v $(ERLC_OPTS) -o ebin/ \
@@ -296,16 +365,54 @@ endif
 
 clean:: clean-app
 
-# Extra targets.
-
-erlc-include:
-	-@if [ -d ebin/ ]; then \
-		find include/ src/ -type f -name \*.hrl -newer ebin -exec touch $(shell find src/ -type f -name "*.erl") \; 2>/dev/null || printf ''; \
-	fi
-
 clean-app:
 	$(gen_verbose) rm -rf ebin/ priv/mibs/ \
 		$(addprefix include/,$(addsuffix .hrl,$(notdir $(basename $(wildcard mibs/*.mib)))))
+
+# Copyright (c) 2015, Loïc Hoguin <essen@ninenines.eu>
+# This file is part of erlang.mk and subject to the terms of the ISC License.
+
+.PHONY: test-deps test-dir test-build clean-test-dir
+
+# Configuration.
+
+TEST_DIR ?= test
+
+ALL_TEST_DEPS_DIRS = $(addprefix $(DEPS_DIR)/,$(TEST_DEPS))
+
+TEST_ERLC_OPTS ?= +debug_info +warn_export_vars +warn_shadow_vars +warn_obsolete_guard
+TEST_ERLC_OPTS += -DTEST=1
+
+# Targets.
+
+$(foreach dep,$(TEST_DEPS),$(eval $(call dep_target,$(dep))))
+
+test-deps: $(ALL_TEST_DEPS_DIRS)
+	@for dep in $(ALL_TEST_DEPS_DIRS) ; do $(MAKE) -C $$dep; done
+
+ifneq ($(strip $(TEST_DIR)),)
+test-dir:
+	$(gen_verbose) erlc -v $(TEST_ERLC_OPTS) -I include/ -o $(TEST_DIR) \
+		$(wildcard $(TEST_DIR)/*.erl $(TEST_DIR)/*/*.erl) -pa ebin/
+endif
+
+ifeq ($(wildcard ebin/test),)
+test-build: ERLC_OPTS=$(TEST_ERLC_OPTS)
+test-build: clean deps test-deps
+	@$(MAKE) --no-print-directory app-build test-dir ERLC_OPTS="$(TEST_ERLC_OPTS)"
+	$(gen_verbose) touch ebin/test
+else
+test-build: ERLC_OPTS=$(TEST_ERLC_OPTS)
+test-build: deps test-deps
+	@$(MAKE) --no-print-directory app-build test-dir ERLC_OPTS="$(TEST_ERLC_OPTS)"
+endif
+
+clean:: clean-test-dir
+
+clean-test-dir:
+ifneq ($(wildcard $(TEST_DIR)/*.beam),)
+	$(gen_verbose) rm -f $(TEST_DIR)/*.beam
+endif
 
 # Copyright (c) 2014, Loïc Hoguin <essen@ninenines.eu>
 # This file is part of erlang.mk and subject to the terms of the ISC License.
@@ -718,7 +825,7 @@ $(C_SRC_OUTPUT): $(OBJECTS)
 	$(COMPILE_CPP) $(OUTPUT_OPTION) $<
 
 $(C_SRC_ENV):
-	@erl -noshell -noinput -eval "file:write_file(\"$(C_SRC_ENV)\", \
+	@$(ERL) -eval "file:write_file(\"$(C_SRC_ENV)\", \
 		io_lib:format( \
 			\"ERTS_INCLUDE_DIR ?= ~s/erts-~s/include/~n\" \
 			\"ERL_INTERFACE_INCLUDE_DIR ?= ~s~n\" \
@@ -726,7 +833,7 @@ $(C_SRC_ENV):
 			[code:root_dir(), erlang:system_info(version), \
 			code:lib_dir(erl_interface, include), \
 			code:lib_dir(erl_interface, lib)])), \
-		erlang:halt()."
+		halt()."
 
 clean:: clean-c_src
 
@@ -740,6 +847,62 @@ distclean-c_src-env:
 
 -include $(C_SRC_ENV)
 endif
+
+# Copyright (c) 2013-2014, Loïc Hoguin <essen@ninenines.eu>
+# This file is part of erlang.mk and subject to the terms of the ISC License.
+
+.PHONY: ct distclean-ct
+
+# Configuration.
+
+CT_OPTS ?=
+ifneq ($(wildcard $(TEST_DIR)),)
+	CT_SUITES ?= $(sort $(subst _SUITE.erl,,$(shell find $(TEST_DIR) -type f -name \*_SUITE.erl -exec basename {} \;)))
+else
+	CT_SUITES ?=
+endif
+
+# Core targets.
+
+tests:: ct
+
+distclean:: distclean-ct
+
+help::
+	@printf "%s\n" "" \
+		"Common_test targets:" \
+		"  ct          Run all the common_test suites for this project" \
+		"" \
+		"All your common_test suites have their associated targets." \
+		"A suite named http_SUITE can be ran using the ct-http target."
+
+# Plugin-specific targets.
+
+CT_RUN = ct_run \
+	-no_auto_compile \
+	-noinput \
+	-pa ebin $(DEPS_DIR)/*/ebin \
+	-dir $(TEST_DIR) \
+	-logdir logs
+
+ifeq ($(CT_SUITES),)
+ct:
+else
+ct: test-build
+	@mkdir -p logs/
+	$(gen_verbose) $(CT_RUN) -suite $(addsuffix _SUITE,$(CT_SUITES)) $(CT_OPTS)
+endif
+
+define ct_suite_target
+ct-$(1): test-build
+	@mkdir -p logs/
+	$(gen_verbose) $(CT_RUN) -suite $(addsuffix _SUITE,$(1)) $(CT_OPTS)
+endef
+
+$(foreach test,$(CT_SUITES),$(eval $(call ct_suite_target,$(test))))
+
+distclean-ct:
+	$(gen_verbose) rm -rf logs/
 
 # Copyright (c) 2013-2014, Loïc Hoguin <essen@ninenines.eu>
 # This file is part of erlang.mk and subject to the terms of the ISC License.
@@ -784,9 +947,10 @@ endif
 	@dialyzer --no_native $(DIALYZER_DIRS) $(DIALYZER_OPTS)
 
 # Copyright (c) 2013-2014, Loïc Hoguin <essen@ninenines.eu>
+# Copyright (c) 2015, Viktor Söderqvist <viktor@zuiderkwast.se>
 # This file is part of erlang.mk and subject to the terms of the ISC License.
 
-.PHONY: distclean-edoc
+.PHONY: distclean-edoc build-doc-deps
 
 # Configuration.
 
@@ -794,13 +958,19 @@ EDOC_OPTS ?=
 
 # Core targets.
 
-docs:: distclean-edoc
-	$(gen_verbose) erl -noshell \
-		-eval 'edoc:application($(PROJECT), ".", [$(EDOC_OPTS)]), init:stop().'
+docs:: distclean-edoc build-doc-deps
+	$(gen_verbose) $(ERL) -eval 'edoc:application($(PROJECT), ".", [$(EDOC_OPTS)]), halt().'
 
 distclean:: distclean-edoc
 
 # Plugin-specific targets.
+
+DOC_DEPS_DIRS = $(addprefix $(DEPS_DIR)/,$(DOC_DEPS))
+
+$(foreach dep,$(DOC_DEPS),$(eval $(call dep_target,$(dep))))
+
+build-doc-deps: $(DOC_DEPS_DIRS)
+	@for dep in $(DOC_DEPS_DIRS) ; do $(MAKE) -C $$dep; done
 
 distclean-edoc:
 	$(gen_verbose) rm -f doc/*.css doc/*.html doc/*.png doc/edoc-info
@@ -828,20 +998,18 @@ help::
 		"Elvis targets:" \
 		"  elvis       Run Elvis using the local elvis.config or download the default otherwise"
 
-ifneq ($(wildcard $(ELVIS_CONFIG)),)
-rel:: distclean-elvis
-endif
-
 distclean:: distclean-elvis
 
 # Plugin-specific targets.
 
 $(ELVIS):
-	@$(call core_http_get,$(ELVIS_CONFIG),$(ELVIS_CONFIG_URL))
 	@$(call core_http_get,$(ELVIS),$(ELVIS_URL))
 	@chmod +x $(ELVIS)
 
-elvis: $(ELVIS)
+$(ELVIS_CONFIG):
+	@$(call core_http_get,$(ELVIS_CONFIG),$(ELVIS_CONFIG_URL))
+
+elvis: $(ELVIS) $(ELVIS_CONFIG)
 	@$(ELVIS) rock -c $(ELVIS_CONFIG) $(ELVIS_OPTS)
 
 distclean-elvis:
@@ -862,7 +1030,7 @@ dtl_verbose = $(dtl_verbose_$(V))
 # Core targets.
 
 define compile_erlydtl
-	$(dtl_verbose) erl -noshell -pa ebin/ $(DEPS_DIR)/erlydtl/ebin/ -eval ' \
+	$(dtl_verbose) $(ERL) -pa ebin/ $(DEPS_DIR)/erlydtl/ebin/ -eval ' \
 		Compile = fun(F) -> \
 			S = fun (1) -> re:replace(filename:rootname(string:sub_string(F, 11), ".dtl"), "/",  "_",  [{return, list}, global]); \
 				(0) -> filename:basename(F, ".dtl") \
@@ -871,7 +1039,7 @@ define compile_erlydtl
 			{ok, _} = erlydtl:compile(F, Module, [{out_dir, "ebin/"}, return_errors, {doc_root, "templates"}]) \
 		end, \
 		_ = [Compile(F) || F <- string:tokens("$(1)", " ")], \
-		init:stop()'
+		halt().'
 endef
 
 ifneq ($(wildcard src/),)
@@ -892,7 +1060,6 @@ ESCRIPT_COMMENT ?= This is an -*- erlang -*- file
 ESCRIPT_BEAMS ?= "ebin/*", "deps/*/ebin/*"
 ESCRIPT_SYS_CONFIG ?= "rel/sys.config"
 ESCRIPT_EMU_ARGS ?= -pa . \
-	-noshell -noinput  \
 	-sasl errlog_type error \
 	-escript main $(ESCRIPT_NAME)
 ESCRIPT_SHEBANG ?= /usr/bin/env escript
@@ -914,6 +1081,7 @@ help::
 # Modified MIT License, https://github.com/synrc/mad/blob/master/LICENSE :
 # Software may only be used for the great good and the true happiness of all
 # sentient beings.
+
 define ESCRIPT_RAW
 'Read = fun(F) -> {ok, B} = file:read_file(filename:absname(F)), B end,'\
 'Files = fun(L) -> A = lists:concat([filelib:wildcard(X)||X<- L ]),'\
@@ -932,15 +1100,64 @@ define ESCRIPT_RAW
 '  ]),'\
 '  file:change_mode(Escript, 8#755)'\
 'end,'\
-'Ez("$(ESCRIPT_NAME)").'
+'Ez("$(ESCRIPT_NAME)"),'\
+'halt().'
 endef
+
 ESCRIPT_COMMAND = $(subst ' ',,$(ESCRIPT_RAW))
 
 escript:: distclean-escript deps app
-	$(gen_verbose) erl -noshell -eval $(ESCRIPT_COMMAND) -s init stop
+	$(gen_verbose) $(ERL) -eval $(ESCRIPT_COMMAND)
 
 distclean-escript:
 	$(gen_verbose) rm -f $(ESCRIPT_NAME)
+
+# Copyright (c) 2014, Enrique Fernandez <enrique.fernandez@erlang-solutions.com>
+# This file is contributed to erlang.mk and subject to the terms of the ISC License.
+
+.PHONY: eunit
+
+# Configuration
+
+ifeq ($(strip $(TEST_DIR)),)
+TAGGED_EUNIT_TESTS = {dir,"ebin"}
+else
+# All modules in TEST_DIR
+TEST_DIR_MODS = $(notdir $(basename $(shell find $(TEST_DIR) -type f -name *.beam)))
+# All modules in 'ebin'
+EUNIT_EBIN_MODS = $(notdir $(basename $(shell find ebin -type f -name *.beam)))
+# Only those modules in TEST_DIR with no matching module in 'ebin'.
+# This is done to avoid some tests being executed twice.
+EUNIT_MODS = $(filter-out $(patsubst %,%_tests,$(EUNIT_EBIN_MODS)),$(TEST_DIR_MODS))
+TAGGED_EUNIT_TESTS = {dir,"ebin"} $(foreach mod,$(EUNIT_MODS),$(shell echo $(mod) | sed -e 's/\(.*\)/{module,\1}/g'))
+endif
+
+EUNIT_OPTS ?= verbose
+
+# Utility functions
+
+define str-join
+	$(shell echo '$(strip $(1))' | sed -e "s/ /,/g")
+endef
+
+# Core targets.
+
+tests:: eunit
+
+help::
+	@printf "%s\n" "" \
+		"EUnit targets:" \
+		"  eunit       Run all the EUnit tests for this project"
+
+# Plugin-specific targets.
+
+EUNIT_RUN = $(ERL) \
+	-pa $(TEST_DIR) $(DEPS_DIR)/*/ebin \
+	-pz ebin \
+	-eval 'case eunit:test([$(call str-join,$(TAGGED_EUNIT_TESTS))], [$(EUNIT_OPTS)]) of ok -> halt(0); error -> halt(1) end.'
+
+eunit: test-build
+	$(gen_verbose) $(EUNIT_RUN)
 
 # Copyright (c) 2013-2014, Loïc Hoguin <essen@ninenines.eu>
 # This file is part of erlang.mk and subject to the terms of the ISC License.
