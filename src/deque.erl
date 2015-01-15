@@ -21,6 +21,9 @@
 %% ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 %% POSSIBILITY OF SUCH DAMAGE.
 
+%% @doc A deque is a double-ended queue. It has amortized constant access at
+%% both ends and it needs slightly less memory compared to a `sequence' because
+%% it is not annotated with any monoid.
 -module(deque).
 
 -export([new/0, is_empty/1, size/1,

@@ -30,6 +30,8 @@
         foldl/3, foldr/3,
         to_list/1]).
 
+-export_type([finger_tree/2, meas_fun/2, op_fun/2, pred_fun/1]).
+
 -type(ft_digit(X) :: {digit, X} | {digit, X, X} | {digit, X, X, X} |
     {digit, X, X, X, X}).
 -type(ft_node(V, X) :: {node, V, X, X} | {node, V, X, X, X}).
