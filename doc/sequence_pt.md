@@ -6,7 +6,7 @@
 * [Function Details](#functions)
 
 
-This parse transform adds the syntax `<<[...]:sequence>>` for
+This parse transform adds the syntax `<<[...]/sequence>>` for
 constructing sequences at compile time.
 
 <a name="description"></a>

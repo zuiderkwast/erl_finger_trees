@@ -1,4 +1,4 @@
-%% @doc This parse transform adds the syntax `<<[...]:sequence>>' for
+%% @doc This parse transform adds the syntax `<<[...]/sequence>>' for
 %% constructing sequences at compile time.
 %%
 %% TODO: Capture this syntax instead: `sequence:from_list([...])'
@@ -9,13 +9,12 @@
 parse_transform(Forms, _Options) ->
     parse_trans:plain_transform(fun do_transform/1, Forms).
 
-do_transform({bin, Line, [{bin_element, _, {nil, _}, {atom, _, sequence},
-                           default}]}) ->
-    %% <<[]:sequence>>
+do_transform({bin, Line, [{bin_element, _, {nil, _}, default, [sequence]}]}) ->
+    %% <<[]/sequence>>
     make_abs_sequence([], Line);
 do_transform({bin, Line, [{bin_element, _, {cons, _, _H, _T} = Cons,
-                           {atom, _, sequence}, default}]}) ->
-    %% <<[_, ...]:sequence>>
+                           default, [sequence]}]}) ->
+    %% <<[_, ...]/sequence>>
     Forms = abs_list_to_list_of_abs(Cons, []),
     %% Recursively apply transform to the elements of the list.
     Forms1 = [begin
